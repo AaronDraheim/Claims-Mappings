@@ -1,0 +1,123 @@
+Connect-MgGraph -Scopes "Application.Read.All","Policy.Read.All"
+
+$AppName = Read-Host "Enter Enterprise Application name"
+
+# Find Enterprise Application
+$SP = Get-MgServicePrincipal -Filter "displayName eq '$AppName'"
+
+if (-not $SP) {
+    Write-Host "Application not found." -ForegroundColor Red
+    return
+}
+
+Write-Host "`nAPPLICATION" -ForegroundColor Cyan
+Write-Host "-----------"
+Write-Host "Name:      $($SP.DisplayName)"
+Write-Host "Object ID: $($SP.Id)"
+Write-Host "App ID:    $($SP.AppId)"
+
+# ==========================================
+# Attributes & Claims / Custom Claims Policy
+# ==========================================
+
+Write-Host "`nATTRIBUTES & CLAIMS" -ForegroundColor Cyan
+Write-Host "-------------------"
+
+try {
+
+    $ClaimsPolicy = Invoke-MgGraphRequest `
+        -Method GET `
+        -Uri "https://graph.microsoft.com/beta/servicePrincipals/$($SP.Id)/claimsPolicy"
+
+    $Output = foreach ($Claim in $ClaimsPolicy.claims) {
+
+        foreach ($Config in $Claim.configurations) {
+
+            $Attribute = $Config.attribute.id
+
+            if (-not $Attribute) {
+                $Attribute = "-"
+            }
+
+            # Build readable transformation description
+            if ($Config.transformations -and $Config.transformations.Count -gt 0) {
+
+                $Transformation = ($Config.transformations | ForEach-Object {
+
+                    if ($_.name) {
+                        $_.name
+                    }
+                    elseif ($_.id) {
+                        $_.id
+                    }
+                    elseif ($_.'@odata.type') {
+                        $_.'@odata.type' -replace '#microsoft.graph.', ''
+                    }
+                    else {
+                        "Transformation configured"
+                    }
+
+                }) -join ", "
+
+            }
+            else {
+                $Transformation = "-"
+            }
+
+            [PSCustomObject]@{
+                Claim          = $Claim.name
+                SourceAttribute = "user.$Attribute"
+                Transformation = $Transformation
+            }
+        }
+    }
+
+    $Output | Format-Table -AutoSize
+
+}
+catch {
+    Write-Host "Unable to retrieve Attributes & Claims." -ForegroundColor Yellow
+    Write-Host $_.Exception.Message
+}
+
+# ==========================================
+# Claims Mapping Policy
+# ==========================================
+
+Write-Host "`nCLAIMS MAPPING POLICY" -ForegroundColor Cyan
+Write-Host "---------------------"
+
+$MappingPolicies = Get-MgServicePrincipalClaimMappingPolicy `
+    -ServicePrincipalId $SP.Id
+
+if (-not $MappingPolicies) {
+
+    Write-Host "None assigned." -ForegroundColor Yellow
+
+}
+else {
+
+    foreach ($Policy in $MappingPolicies) {
+
+        Write-Host "Policy: $($Policy.DisplayName)"
+        Write-Host "ID:     $($Policy.Id)"
+
+        foreach ($Definition in $Policy.Definition) {
+
+            $Def = $Definition | ConvertFrom-Json
+
+            $Def.ClaimsMappingPolicy.ClaimsSchema |
+                Select-Object `
+                    @{N="Claim";E={
+                        if ($_.SamlClaimType) {$_.SamlClaimType}
+                        else {$_.JwtClaimType}
+                    }},
+                    @{N="Source";E={$_.Source}},
+                    @{N="Attribute";E={
+                        if ($_.ID) {$_.ID}
+                        else {$_.ExtensionID}
+                    }} |
+                Format-Table -AutoSize
+        }
+    }
+}
