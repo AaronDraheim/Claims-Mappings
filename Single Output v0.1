@@ -19,62 +19,138 @@
 # interruption, loss of business information, or other pecuniary loss) arising out of the use of or
 # inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
 
+# ============================================================
+# Microsoft Entra Enterprise Application Claims Report
+#
+# Purpose:
+#   Retrieves an Enterprise Application (service principal)
+#   by display name and displays:
+#
+#   1. Basic application information
+#   2. Attributes & Claims / Custom Claims Policy configuration
+#   3. Any Claims Mapping Policy assigned to the application
+#
+# Requirements:
+#   - Microsoft Graph PowerShell SDK
+#   - Application.Read.All
+#   - Policy.Read.All
+# ============================================================
 
+
+# Connect to Microsoft Graph with permissions required to
+# read Enterprise Applications and policy configuration.
 Connect-MgGraph -Scopes "Application.Read.All","Policy.Read.All"
 
+
+# Prompt for the Enterprise Application display name.
 $AppName = Read-Host "Enter Enterprise Application name"
 
-# Find Enterprise Application
+
+# ------------------------------------------------------------
+# Locate the Enterprise Application
+# ------------------------------------------------------------
+
+# Enterprise Applications are represented in Microsoft Entra ID
+# as service principal objects.
 $SP = Get-MgServicePrincipal -Filter "displayName eq '$AppName'"
 
+
+# Stop if an application matching the supplied name cannot be found.
 if (-not $SP) {
     Write-Host "Application not found." -ForegroundColor Red
     return
 }
 
+
+# Display basic information about the Enterprise Application.
 Write-Host "`nAPPLICATION" -ForegroundColor Cyan
 Write-Host "-----------"
 Write-Host "Name:      $($SP.DisplayName)"
 Write-Host "Object ID: $($SP.Id)"
 Write-Host "App ID:    $($SP.AppId)"
 
-# ==========================================
+
+# ============================================================
 # Attributes & Claims / Custom Claims Policy
-# ==========================================
+# ============================================================
 
 Write-Host "`nATTRIBUTES & CLAIMS" -ForegroundColor Cyan
 Write-Host "-------------------"
 
 try {
 
+    # Retrieve the application's claims configuration.
+    #
+    # This is the configuration associated with the
+    # Attributes & Claims experience for the Enterprise Application.
+    #
+    # The service principal Object ID is used to identify
+    # the specific Enterprise Application.
     $ClaimsPolicy = Invoke-MgGraphRequest `
         -Method GET `
         -Uri "https://graph.microsoft.com/beta/servicePrincipals/$($SP.Id)/claimsPolicy"
 
+
+    # Process each claim returned by Microsoft Graph.
     $Output = foreach ($Claim in $ClaimsPolicy.claims) {
 
+
+        # A claim can contain one or more configurations.
         foreach ($Config in $Claim.configurations) {
 
+
+            # Retrieve the source attribute for the claim.
+            # Examples:
+            #   user.mail
+            #   user.userprincipalname
+            #   user.onpremisessamaccountname
             $Attribute = $Config.attribute.id
 
+
+            # If no source attribute is defined, display a dash
+            # instead of returning a blank value.
             if (-not $Attribute) {
                 $Attribute = "-"
             }
 
-            # Build readable transformation description
-            if ($Config.transformations -and $Config.transformations.Count -gt 0) {
 
+            # ------------------------------------------------
+            # Determine whether a transformation is configured
+            # ------------------------------------------------
+
+            # Transformations can modify the source attribute
+            # before the resulting value is emitted in the token.
+            if ($Config.transformations -and
+                $Config.transformations.Count -gt 0) {
+
+
+                # Attempt to create a readable description of
+                # each transformation returned by Graph.
                 $Transformation = ($Config.transformations | ForEach-Object {
 
+
+                    # Prefer the transformation name when available.
                     if ($_.name) {
                         $_.name
                     }
+
+
+                    # Otherwise use the transformation ID.
                     elseif ($_.id) {
                         $_.id
                     }
+
+
+                    # If neither is available, use the Graph
+                    # object type and remove the Graph namespace
+                    # to make the output easier to read.
                     elseif ($_.'@odata.type') {
                         $_.'@odata.type' -replace '#microsoft.graph.', ''
                     }
+
+
+                    # Fallback if Graph indicates a transformation
+                    # exists but does not expose a friendly name.
                     else {
                         "Transformation configured"
                     }
@@ -83,35 +159,58 @@ try {
 
             }
             else {
+
+                # No transformation configured for the claim.
                 $Transformation = "-"
             }
 
+
+            # Create a simplified object containing only the
+            # information useful for reviewing claim configuration.
             [PSCustomObject]@{
-                Claim          = $Claim.name
+
+                # Name of the claim issued to the application.
+                Claim = $Claim.name
+
+                # Source Microsoft Entra user attribute.
                 SourceAttribute = "user.$Attribute"
+
+                # Transformation applied to the source attribute.
                 Transformation = $Transformation
             }
         }
     }
 
+
+    # Display claims in a clean table rather than raw Graph JSON.
     $Output | Format-Table -AutoSize
 
 }
 catch {
+
+    # Display an understandable message if Graph cannot retrieve
+    # the application's Attributes & Claims configuration.
     Write-Host "Unable to retrieve Attributes & Claims." -ForegroundColor Yellow
     Write-Host $_.Exception.Message
 }
 
-# ==========================================
+
+# ============================================================
 # Claims Mapping Policy
-# ==========================================
+# ============================================================
 
 Write-Host "`nCLAIMS MAPPING POLICY" -ForegroundColor Cyan
 Write-Host "---------------------"
 
+
+# Retrieve any Claims Mapping Policy explicitly assigned
+# to the Enterprise Application's service principal.
 $MappingPolicies = Get-MgServicePrincipalClaimMappingPolicy `
     -ServicePrincipalId $SP.Id
 
+
+# If no Claims Mapping Policy is assigned, indicate that
+# explicitly rather than returning an empty result.
 if (-not $MappingPolicies) {
 
     Write-Host "None assigned." -ForegroundColor Yellow
@@ -119,26 +218,64 @@ if (-not $MappingPolicies) {
 }
 else {
 
+
+    # Process every Claims Mapping Policy returned for
+    # the service principal.
     foreach ($Policy in $MappingPolicies) {
 
+
+        # Display identifying information for the policy.
         Write-Host "Policy: $($Policy.DisplayName)"
         Write-Host "ID:     $($Policy.Id)"
 
+
+        # A Claims Mapping Policy definition is returned as JSON.
+        # Process each definition associated with the policy.
         foreach ($Definition in $Policy.Definition) {
 
+
+            # Convert the JSON policy definition into a
+            # PowerShell object so individual properties
+            # can be queried.
             $Def = $Definition | ConvertFrom-Json
 
+
+            # Retrieve the ClaimsSchema and display only the
+            # properties useful for reviewing claim mappings.
             $Def.ClaimsMappingPolicy.ClaimsSchema |
                 Select-Object `
+
+                    # Determine the emitted claim name.
+                    # Prefer the SAML claim type when present.
+                    # Otherwise display the JWT claim type.
                     @{N="Claim";E={
-                        if ($_.SamlClaimType) {$_.SamlClaimType}
-                        else {$_.JwtClaimType}
+                        if ($_.SamlClaimType) {
+                            $_.SamlClaimType
+                        }
+                        else {
+                            $_.JwtClaimType
+                        }
                     }},
-                    @{N="Source";E={$_.Source}},
+
+                    # Display the source of the claim.
+                    @{N="Source";E={
+                        $_.Source
+                    }},
+
+                    # Display the source attribute.
+                    #
+                    # Standard attributes normally use ID.
+                    # Directory extension attributes can instead
+                    # be represented by ExtensionID.
                     @{N="Attribute";E={
-                        if ($_.ID) {$_.ID}
-                        else {$_.ExtensionID}
+                        if ($_.ID) {
+                            $_.ID
+                        }
+                        else {
+                            $_.ExtensionID
+                        }
                     }} |
+
                 Format-Table -AutoSize
         }
     }
