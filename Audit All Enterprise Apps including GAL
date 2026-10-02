@@ -1,23 +1,6 @@
-# This Sample Code is provided for the purpose of illustration only and is not intended to be used
-# in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS"
-# WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive,
-# royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code
-# form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to
-# market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright
-# notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold
-# harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys’
-# fees, that arise or result from the use or distribution of the Sample Code.
- 
-# This sample script is not supported under any Microsoft standard support program or service.
-# The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims
-# all implied warranties including, without limitation, any implied warranties of merchantability
-# or of fitness for a particular purpose. The entire risk arising out of the use or performance of
-# the sample scripts and documentation remains with you. In no event shall Microsoft, its authors,
-# or anyone else involved in the creation, production, or delivery of the scripts be liable for any
-# damages whatsoever (including, without limitation, damages for loss of business profits, business
-# interruption, loss of business information, or other pecuniary loss) arising out of the use of or
-# inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
+# Microsoft Entra Custom Enterprise Application Claims Audit (Combined Report) 
+
+# This Sample Code is provided for the purpose of illustration only and is not intended to be used in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive, royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys' fees, that arise or result from the use or distribution of the Sample Code. This sample script is not supported under any Microsoft standard support program or service. The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims all implied warranties including, without limitation, any implied warranties of merchantability or of fitness for a particular purpose. The entire risk arising out of the use or performance of the sample scripts and documentation remains with you. In no event shall Microsoft, its authors, or anyone else involved in the creation, production, or delivery of the scripts be liable for any damages whatsoever (including, without limitation, damages for loss of business profits, business interruption, loss of business information, or other pecuniary loss) arising out of the use of or inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages. 
 
 # ============================================================ 
 
@@ -57,19 +40,29 @@
 
 # read Enterprise Applications and policy configuration. 
 
+# Authenticate to Microsoft Graph using read-only application and policy scopes. 
+
 Connect-MgGraph -Scopes "Application.Read.All","Policy.Read.All" 
 
 # Prompt for the file path where the HTML audit report will be saved. 
+
+# Require a non-empty destination path from the operator. 
 
 do { $ReportPath = Read-Host "Enter full file path to save the HTML report (e.g. C:\Reports\EnterpriseAppAudit.html)" } while ([string]::IsNullOrWhiteSpace($ReportPath)) 
 
 # Ensure the report has an .html extension. 
 
+# Append the HTML extension when the supplied path omits it. 
+
 if ($ReportPath -notmatch '.html?$') { $ReportPath = "$ReportPath.html" } 
 
 # Make sure the destination folder exists. 
 
+# Resolve the parent directory from the requested report path. 
+
 $ReportFolder = Split-Path -Path $ReportPath -Parent 
+
+# Create the destination directory when it does not already exist. 
 
 if ($ReportFolder -and -not (Test-Path $ReportFolder)) { New-Item -ItemType Directory -Path $ReportFolder -Force | Out-Null } 
 
@@ -89,11 +82,15 @@ if ($ReportFolder -and -not (Test-Path $ReportFolder)) { New-Item -ItemType Dire
 
 # are considered "custom" Enterprise Applications for this audit. 
 
+# Notify the operator before tenant-wide service-principal retrieval begins. 
+
 Write-Host "Retrieving Enterprise Applications from the tenant..." -ForegroundColor Cyan 
 
 # Retrieve every service principal of type "Application". 
 
 # PageSize/All ensures the full tenant list is returned, not a single page. 
+
+# Request all service principals whose type is Application. 
 
 $AllServicePrincipals = Get-MgServicePrincipal -Filter "servicePrincipalType eq 'Application'" -All 
 
@@ -109,9 +106,15 @@ $AllServicePrincipals = Get-MgServicePrincipal -Filter "servicePrincipalType eq 
 
 # Filter the generated report afterward if a narrower inventory is required. 
 
+# Sort the complete inventory by display name for predictable report ordering. 
+
 $CustomApps = @($AllServicePrincipals | Sort-Object DisplayName) 
 
+# Stop cleanly when the tenant contains no application service principals. 
+
 if (-not $CustomApps -or $CustomApps.Count -eq 0) { Write-Host "No custom Enterprise Applications were found in this tenant." -ForegroundColor Yellow; return } 
+
+# Display the number of applications that will be evaluated. 
 
 Write-Host "Found $($CustomApps.Count) custom Enterprise Application(s). Auditing..." -ForegroundColor Cyan 
 
@@ -129,24 +132,38 @@ Write-Host "Found $($CustomApps.Count) custom Enterprise Application(s). Auditin
 
 # for later rendering into the combined, collapsible HTML report. 
 
+# Initialize the progress counter. 
+
 $AppIndex = 0 
+
+# Build one audit result object for every application service principal. 
 
 $AuditResults = foreach ($SP in $CustomApps) { 
 
+# Advance the current application counter. 
+
     $AppIndex++ 
+
+# Calculate progress as a percentage of the complete inventory. 
 
     $PercentComplete = [math]::Round(($AppIndex / $CustomApps.Count) * 100) 
 
+# Display the application currently being processed. 
+
     Write-Progress -Activity "Auditing custom Enterprise Applications" -Status "Processing $AppIndex of $($CustomApps.Count): $($SP.DisplayName)" -PercentComplete $PercentComplete 
 
+    # Track retrieval failures separately from a valid empty policy response. 
     $ClaimsError = $null 
     try { 
         # Retrieve the custom claims policy configured through Attributes & Claims. 
         $ClaimsPolicy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/servicePrincipals/$($SP.Id)/claimsPolicy" -ErrorAction Stop 
+        # Normalize the claims collection so zero, one, or many claims are handled consistently. 
         $ClaimRows = foreach ($Claim in @($ClaimsPolicy.claims)) { 
             foreach ($Config in @($Claim.configurations)) { 
+                # Read the source directory attribute used to populate this claim. 
                 $Attribute = $Config.attribute.id 
                 if (-not $Attribute) { $Attribute = "-" } 
+                # Preserve a readable summary of any configured claim transformations. 
                 if ($Config.transformations -and $Config.transformations.Count -gt 0) { 
                     $Transformation = ($Config.transformations | ForEach-Object { 
                         if ($_.name) { $_.name } 
@@ -154,7 +171,9 @@ $AuditResults = foreach ($SP in $CustomApps) {
                         elseif ($_.'@odata.type') { $_.'@odata.type' -replace '#microsoft.graph.', '' } 
                         else { "Transformation configured" } 
                     }) -join ", " 
-                } else { $Transformation = "-" } 
+                } else { 
+                    $Transformation = "-" 
+                } 
                 [PSCustomObject]@{ 
                     Claim = $Claim.name 
                     SourceAttribute = if ($Attribute -eq "-") { "-" } else { "user.$Attribute" } 
@@ -163,19 +182,25 @@ $AuditResults = foreach ($SP in $CustomApps) {
             } 
         } 
     } catch { 
+        # Keep processing other applications and surface the failure in the HTML report. 
         $ClaimRows = @() 
         $ClaimsError = $_.Exception.Message 
     } 
 
     # Retrieve assigned claims-mapping policies and explicitly request definitions. 
+    # Initialize an empty collection for normalized mapping-policy rows. 
     $MappingRows = @() 
     $MappingError = $null 
     try { 
+        # Query the service-principal relationship and request each policy definition. 
         $MappingResponse = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($SP.Id)/claimsMappingPolicies?`$select=id,displayName,definition" -ErrorAction Stop 
+        # Normalize the Graph response collection before enumeration. 
         $MappingPolicies = @($MappingResponse.value) 
         foreach ($Policy in $MappingPolicies) { 
             foreach ($Definition in @($Policy.definition)) { 
+                # Deserialize the policy definition string into an inspectable object. 
                 $Def = $Definition | ConvertFrom-Json 
+                # Flatten every ClaimsSchema entry into a report-friendly row. 
                 foreach ($Schema in @($Def.ClaimsMappingPolicy.ClaimsSchema)) { 
                     $MappingRows += [PSCustomObject]@{ 
                         PolicyName = $Policy.displayName 
@@ -187,6 +212,7 @@ $AuditResults = foreach ($SP in $CustomApps) {
             } 
         } 
     } catch { 
+        # Preserve the failure for display without stopping the tenant-wide audit. 
         $MappingError = $_.Exception.Message 
     } 
 
@@ -207,6 +233,8 @@ $AuditResults = foreach ($SP in $CustomApps) {
 
 } 
 
+# Clear the progress indicator after all applications are processed. 
+
 Write-Progress -Activity "Auditing custom Enterprise Applications" -Completed 
 
 # ------------------------------------------------------------ 
@@ -222,6 +250,8 @@ Write-Progress -Activity "Auditing custom Enterprise Applications" -Completed
 # section reveals that application's Attributes & Claims table 
 
 # and its Claims Mapping Policy table. 
+
+# Notify the operator that report rendering has started. 
 
 Write-Host "Building HTML report..." -ForegroundColor Cyan 
 
@@ -266,35 +296,39 @@ function toggleAll(expand) {
 
 # Build one collapsible section per application. 
 $AppSections = foreach ($App in $AuditResults) { 
-$ClaimRowsHtml = ($App.Claims | ForEach-Object { 
-    "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.SourceAttribute))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Transformation))</td></tr>" 
-}) -join "`n" 
-if ($ClaimRowsHtml) { 
-    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><table><tr><th>Claim</th><th>Source Attribute</th><th>Transformation</th></tr>$ClaimRowsHtml</table>" 
-} elseif ($App.ClaimsError) { 
-    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.ClaimsError))</p>" 
-} else { 
-    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=none>No custom claims policy returned.</p>" 
-} 
+    # HTML-encode tenant-supplied values before inserting them into table cells. 
+    $ClaimRowsHtml = ($App.Claims | ForEach-Object { 
+        "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.SourceAttribute))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Transformation))</td></tr>" 
+    }) -join "`n" 
+    # Render a table, a retrieval error, or an explicit empty-state message. 
+    if ($ClaimRowsHtml) { 
+        $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><table><tr><th>Claim</th><th>Source Attribute</th><th>Transformation</th></tr>$ClaimRowsHtml</table>" 
+    } elseif ($App.ClaimsError) { 
+        $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.ClaimsError))</p>" 
+    } else { 
+        $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=none>No custom claims policy returned.</p>" 
+    } 
 
-# Build the assigned claims-mapping policy section for this application. 
-$MappingRowsHtml = ($App.MappingPolicies | ForEach-Object { 
-    "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.PolicyName))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Source))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Attribute))</td></tr>" 
-}) -join "`n" 
-if ($MappingRowsHtml) { 
-    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><table><tr><th>Policy Name</th><th>Claim</th><th>Source</th><th>Attribute</th></tr>$MappingRowsHtml</table>" 
-} elseif ($App.MappingError) { 
-    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.MappingError))</p>" 
-} else { 
-    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=none>None assigned.</p>" 
-} 
+    # Build the assigned claims-mapping policy section for this application. 
+    # HTML-encode assigned-policy values before inserting them into table cells. 
+    $MappingRowsHtml = ($App.MappingPolicies | ForEach-Object { 
+        "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.PolicyName))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Source))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Attribute))</td></tr>" 
+    }) -join "`n" 
+    # Distinguish populated, failed, and unassigned mapping-policy results. 
+    if ($MappingRowsHtml) { 
+        $MappingTableHtml = "<h3>Claims Mapping Policy</h3><table><tr><th>Policy Name</th><th>Claim</th><th>Source</th><th>Attribute</th></tr>$MappingRowsHtml</table>" 
+    } elseif ($App.MappingError) { 
+        $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.MappingError))</p>" 
+    } else { 
+        $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=none>None assigned.</p>" 
+    } 
 
- 
     # ---------------------------------------------------- 
     # Wrap this application's tables in a collapsible 
     # <details>/<summary> section so the report stays 
     # readable when auditing many applications. 
     # ---------------------------------------------------- 
+    # Emit the application name as the clickable summary and place both result sections below it. 
     @" 
 <details> 
 <summary>$($App.DisplayName)</summary> 
@@ -313,18 +347,22 @@ $MappingTableHtml
 
 # ------------------------------------------------------------ 
 
+# Close the HTML document after all application sections are generated. 
 $HtmlFooter = "</body>`n</html>" 
  
-# Combine the head, every application's collapsible section, 
-# and the footer into one final HTML document. 
+# Join the page header, collapsible application sections, and footer. 
 $FullHtml = $HtmlHead + "`n" + ($AppSections -join "`n") + "`n" + $HtmlFooter 
  
-# Write the combined report to the path supplied by the user. 
+# Write UTF-8 output so claim names and application names remain readable. 
 $FullHtml | Out-File -FilePath $ReportPath -Encoding UTF8 
+
+# Confirm the report destination after the file is written. 
 
 Write-Host "Report saved to: $ReportPath" -ForegroundColor Green 
 
 # Open the completed report in the default browser. 
+
+# Open the completed report using the system default browser. 
 
 Invoke-Item $ReportPath 
 
