@@ -1,0 +1,335 @@
+# This Sample Code is provided for the purpose of illustration only and is not intended to be used
+# in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS"
+# WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive,
+# royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code
+# form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to
+# market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright
+# notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold
+# harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys’
+# fees, that arise or result from the use or distribution of the Sample Code.
+ 
+# This sample script is not supported under any Microsoft standard support program or service.
+# The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims
+# all implied warranties including, without limitation, any implied warranties of merchantability
+# or of fitness for a particular purpose. The entire risk arising out of the use or performance of
+# the sample scripts and documentation remains with you. In no event shall Microsoft, its authors,
+# or anyone else involved in the creation, production, or delivery of the scripts be liable for any
+# damages whatsoever (including, without limitation, damages for loss of business profits, business
+# interruption, loss of business information, or other pecuniary loss) arising out of the use of or
+# inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
+
+# ============================================================ 
+
+# Microsoft Entra Custom Enterprise Application Claims Audit (Combined, Collapsible HTML Report) 
+
+# Purpose: 
+
+# Discovers every Enterprise Application service principal in the tenant. 
+
+# No gallery, publisher, or ownership filtering is applied, preventing 
+
+# applications with claims configuration from being excluded. 
+
+# 1. Basic application information 
+
+# 2. Attributes & Claims / Custom Claims Policy configuration 
+
+# 3. Any Claims Mapping Policy assigned to the application 
+
+# The combined results are rendered into a single HTML report where each 
+
+# application is its own collapsible (expand/collapse) section containing its 
+
+# Attributes & Claims table and Claims Mapping Policy table. 
+
+# Requirements: 
+
+# - Microsoft Graph PowerShell SDK 
+
+# - Application.Read.All 
+
+# - Policy.Read.All 
+
+# ============================================================ 
+
+# Connect to Microsoft Graph with permissions required to 
+
+# read Enterprise Applications and policy configuration. 
+
+Connect-MgGraph -Scopes "Application.Read.All","Policy.Read.All" 
+
+# Prompt for the file path where the HTML audit report will be saved. 
+
+do { $ReportPath = Read-Host "Enter full file path to save the HTML report (e.g. C:\Reports\EnterpriseAppAudit.html)" } while ([string]::IsNullOrWhiteSpace($ReportPath)) 
+
+# Ensure the report has an .html extension. 
+
+if ($ReportPath -notmatch '.html?$') { $ReportPath = "$ReportPath.html" } 
+
+# Make sure the destination folder exists. 
+
+$ReportFolder = Split-Path -Path $ReportPath -Parent 
+
+if ($ReportFolder -and -not (Test-Path $ReportFolder)) { New-Item -ItemType Directory -Path $ReportFolder -Force | Out-Null } 
+
+# ------------------------------------------------------------ 
+
+# Discover Custom Enterprise Applications 
+
+# ------------------------------------------------------------ 
+
+# Enterprise Applications are represented in Microsoft Entra ID 
+
+# as service principal objects. Only service principals of type 
+
+# "Application" that were NOT provisioned from the Microsoft Entra 
+
+# application gallery and are NOT first-party Microsoft applications 
+
+# are considered "custom" Enterprise Applications for this audit. 
+
+Write-Host "Retrieving Enterprise Applications from the tenant..." -ForegroundColor Cyan 
+
+# Retrieve every service principal of type "Application". 
+
+# PageSize/All ensures the full tenant list is returned, not a single page. 
+
+$AllServicePrincipals = Get-MgServicePrincipal -Filter "servicePrincipalType eq 'Application'" -All 
+
+# Microsoft's own first-party application publisher ID. 
+
+# Use the complete application service-principal collection. 
+
+# Claims configuration can exist on gallery, third-party, or tenant-created apps. 
+
+# The HTML report includes every application and exposes retrieval errors. 
+
+# This avoids relying on publisher metadata to classify an app as custom. 
+
+# Filter the generated report afterward if a narrower inventory is required. 
+
+$CustomApps = @($AllServicePrincipals | Sort-Object DisplayName) 
+
+if (-not $CustomApps -or $CustomApps.Count -eq 0) { Write-Host "No custom Enterprise Applications were found in this tenant." -ForegroundColor Yellow; return } 
+
+Write-Host "Found $($CustomApps.Count) custom Enterprise Application(s). Auditing..." -ForegroundColor Cyan 
+
+# ------------------------------------------------------------ 
+
+# Audit Each Custom Enterprise Application 
+
+# ------------------------------------------------------------ 
+
+# For each custom application, collect basic info, the Attributes 
+
+# & Claims / Custom Claims Policy configuration, and any assigned 
+
+# Claims Mapping Policy. Results are accumulated into $AuditResults 
+
+# for later rendering into the combined, collapsible HTML report. 
+
+$AppIndex = 0 
+
+$AuditResults = foreach ($SP in $CustomApps) { 
+
+    $AppIndex++ 
+
+    $PercentComplete = [math]::Round(($AppIndex / $CustomApps.Count) * 100) 
+
+    Write-Progress -Activity "Auditing custom Enterprise Applications" -Status "Processing $AppIndex of $($CustomApps.Count): $($SP.DisplayName)" -PercentComplete $PercentComplete 
+
+    $ClaimsError = $null 
+    try { 
+        # Retrieve the custom claims policy configured through Attributes & Claims. 
+        $ClaimsPolicy = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/servicePrincipals/$($SP.Id)/claimsPolicy" -ErrorAction Stop 
+        $ClaimRows = foreach ($Claim in @($ClaimsPolicy.claims)) { 
+            foreach ($Config in @($Claim.configurations)) { 
+                $Attribute = $Config.attribute.id 
+                if (-not $Attribute) { $Attribute = "-" } 
+                if ($Config.transformations -and $Config.transformations.Count -gt 0) { 
+                    $Transformation = ($Config.transformations | ForEach-Object { 
+                        if ($_.name) { $_.name } 
+                        elseif ($_.id) { $_.id } 
+                        elseif ($_.'@odata.type') { $_.'@odata.type' -replace '#microsoft.graph.', '' } 
+                        else { "Transformation configured" } 
+                    }) -join ", " 
+                } else { $Transformation = "-" } 
+                [PSCustomObject]@{ 
+                    Claim = $Claim.name 
+                    SourceAttribute = if ($Attribute -eq "-") { "-" } else { "user.$Attribute" } 
+                    Transformation = $Transformation 
+                } 
+            } 
+        } 
+    } catch { 
+        $ClaimRows = @() 
+        $ClaimsError = $_.Exception.Message 
+    } 
+
+    # Retrieve assigned claims-mapping policies and explicitly request definitions. 
+    $MappingRows = @() 
+    $MappingError = $null 
+    try { 
+        $MappingResponse = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($SP.Id)/claimsMappingPolicies?`$select=id,displayName,definition" -ErrorAction Stop 
+        $MappingPolicies = @($MappingResponse.value) 
+        foreach ($Policy in $MappingPolicies) { 
+            foreach ($Definition in @($Policy.definition)) { 
+                $Def = $Definition | ConvertFrom-Json 
+                foreach ($Schema in @($Def.ClaimsMappingPolicy.ClaimsSchema)) { 
+                    $MappingRows += [PSCustomObject]@{ 
+                        PolicyName = $Policy.displayName 
+                        Claim = if ($Schema.SamlClaimType) { $Schema.SamlClaimType } else { $Schema.JwtClaimType } 
+                        Source = $Schema.Source 
+                        Attribute = if ($Schema.ID) { $Schema.ID } else { $Schema.ExtensionID } 
+                    } 
+                } 
+            } 
+        } 
+    } catch { 
+        $MappingError = $_.Exception.Message 
+    } 
+
+# ------------------------------------------------------------ 
+# Emit one consolidated result object per application for 
+# the combined HTML report, even when no claims or mapping 
+# policy rows were found (so every application still appears). 
+# ------------------------------------------------------------ 
+[PSCustomObject]@{ 
+    DisplayName     = $SP.DisplayName 
+    ObjectId        = $SP.Id 
+    AppId           = $SP.AppId 
+    Claims          = $ClaimRows 
+    MappingPolicies = $MappingRows 
+    ClaimsError     = $ClaimsError 
+    MappingError    = $MappingError 
+} 
+
+} 
+
+Write-Progress -Activity "Auditing custom Enterprise Applications" -Completed 
+
+# ------------------------------------------------------------ 
+
+# Build the Combined, Collapsible HTML Report 
+
+# ------------------------------------------------------------ 
+
+# Each custom Enterprise Application becomes its own collapsible 
+
+# section (an HTML <details>/<summary> element). Expanding a 
+
+# section reveals that application's Attributes & Claims table 
+
+# and its Claims Mapping Policy table. 
+
+Write-Host "Building HTML report..." -ForegroundColor Cyan 
+
+$GeneratedOn = Get-Date -Format "yyyy-MM-dd HH:mm:ss" 
+ 
+$HtmlHead = @" 
+<!DOCTYPE html> 
+<html> 
+<head> 
+<meta charset="UTF-8"> 
+<title>Microsoft Entra Enterprise Application Claims Audit</title> 
+<style> 
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; background-color: #f3f2f1; color: #201f1e; } 
+    h1 { color: #0f4761; } 
+    p.meta { color: #605e5c; margin-top: -8px; } 
+    details { background-color: #ffffff; border: 1px solid #d2d0ce; border-radius: 4px; margin-bottom: 10px; padding: 0; } 
+    summary { cursor: pointer; font-weight: 600; font-size: 16px; padding: 12px 16px; background-color: #0f4761; color: #ffffff; border-radius: 4px; list-style: none; } 
+    summary::-webkit-details-marker { display: none; } 
+    summary:before { content: "+ "; } 
+    details[open] summary:before { content: "- "; } 
+    .app-body { padding: 12px 16px 16px 16px; } 
+    .app-meta { font-size: 13px; color: #605e5c; margin-bottom: 10px; } 
+    h3 { color: #0f4761; font-size: 14px; margin-bottom: 4px; } 
+    table { border-collapse: collapse; width: 100%; margin-bottom: 16px; font-size: 13px; } 
+    th, td { border: 1px solid #d2d0ce; padding: 6px 10px; text-align: left; } 
+    th { background-color: #f3f2f1; color: #0f4761; } 
+    tr:nth-child(even) { background-color: #faf9f8; } 
+    .none { color: #a19f9d; font-style: italic; } 
+    .error { color: #a4262c; font-weight: 600; } 
+</style> 
+<script> 
+function toggleAll(expand) { 
+    document.querySelectorAll("details").forEach(function (d) { d.open = expand; }); 
+} 
+</script> 
+</head> 
+<body> 
+<h1>Microsoft Entra Enterprise Application Claims Audit</h1> 
+<p class="meta">Generated: $GeneratedOn  |  Applications audited: $($CustomApps.Count)</p> 
+<p><button onclick="toggleAll(true)">Expand All</button> <button onclick="toggleAll(false)">Collapse All</button></p> 
+"@ 
+
+# Build one collapsible section per application. 
+$AppSections = foreach ($App in $AuditResults) { 
+$ClaimRowsHtml = ($App.Claims | ForEach-Object { 
+    "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.SourceAttribute))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Transformation))</td></tr>" 
+}) -join "`n" 
+if ($ClaimRowsHtml) { 
+    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><table><tr><th>Claim</th><th>Source Attribute</th><th>Transformation</th></tr>$ClaimRowsHtml</table>" 
+} elseif ($App.ClaimsError) { 
+    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.ClaimsError))</p>" 
+} else { 
+    $ClaimsTableHtml = "<h3>Attributes & Claims / Custom Claims Policy</h3><p class=none>No custom claims policy returned.</p>" 
+} 
+
+# Build the assigned claims-mapping policy section for this application. 
+$MappingRowsHtml = ($App.MappingPolicies | ForEach-Object { 
+    "<tr><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.PolicyName))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Claim))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Source))</td><td>$([System.Net.WebUtility]::HtmlEncode([string]$_.Attribute))</td></tr>" 
+}) -join "`n" 
+if ($MappingRowsHtml) { 
+    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><table><tr><th>Policy Name</th><th>Claim</th><th>Source</th><th>Attribute</th></tr>$MappingRowsHtml</table>" 
+} elseif ($App.MappingError) { 
+    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=error>Retrieval failed: $([System.Net.WebUtility]::HtmlEncode([string]$App.MappingError))</p>" 
+} else { 
+    $MappingTableHtml = "<h3>Claims Mapping Policy</h3><p class=none>None assigned.</p>" 
+} 
+
+ 
+    # ---------------------------------------------------- 
+    # Wrap this application's tables in a collapsible 
+    # <details>/<summary> section so the report stays 
+    # readable when auditing many applications. 
+    # ---------------------------------------------------- 
+    @" 
+<details> 
+<summary>$($App.DisplayName)</summary> 
+<div class="app-body"> 
+<div class="app-meta">Object ID: $($App.ObjectId)  |  App ID: $($App.AppId)</div> 
+$ClaimsTableHtml 
+$MappingTableHtml 
+</div> 
+</details> 
+"@ 
+} 
+
+# ------------------------------------------------------------ 
+
+# Assemble and Save the Combined HTML Report 
+
+# ------------------------------------------------------------ 
+
+$HtmlFooter = "</body>`n</html>" 
+ 
+# Combine the head, every application's collapsible section, 
+# and the footer into one final HTML document. 
+$FullHtml = $HtmlHead + "`n" + ($AppSections -join "`n") + "`n" + $HtmlFooter 
+ 
+# Write the combined report to the path supplied by the user. 
+$FullHtml | Out-File -FilePath $ReportPath -Encoding UTF8 
+
+Write-Host "Report saved to: $ReportPath" -ForegroundColor Green 
+
+# Open the completed report in the default browser. 
+
+Invoke-Item $ReportPath 
+
+# ============================================================ 
+
+# This Sample Code is provided for the purpose of illustration only and is not intended to be used in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive, royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys' fees, that arise or result from the use or distribution of the Sample Code. This sample script is not supported under any Microsoft standard support program or service. The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims all implied warranties including, without limitation, any implied warranties of merchantability or of fitness for a particular purpose. The entire risk arising out of the use or performance of the sample scripts and documentation remains with you. In no event shall Microsoft, its authors, or anyone else involved in the creation, production, or delivery of the scripts be liable for any damages whatsoever (including, without limitation, damages for loss of business profits, business interruption, loss of business information, or other pecuniary loss) arising out of the use of or inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages. 
+
+# ============================================================ 
