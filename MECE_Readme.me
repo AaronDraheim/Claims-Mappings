@@ -54,9 +54,10 @@ Managed identities, Microsoft application objects, and other service principal c
 
 ## Required Microsoft Graph Permissions
 
-| Permission             | Type      | Purpose |
-| `Application.Read.All` | Delegated | Reads applications and service principals.           |
-| `Policy.Read.All`      | Delegated | Reads policy configuration used by the claims audit. |
+| Permission | Type | Purpose |
+|---|---|---|
+| `Application.Read.All` | Delegated | Reads applications and service principals. |
+| `Policy.Read.All` | Delegated | Reads policy configuration used by the claims audit. |
 
 Both permissions require administrator consent.
 
@@ -121,8 +122,11 @@ Get-MgServicePrincipal `
     -All
 ```
 
-This filter is intended to align the inventory with the Microsoft Entra admin center classification: Application type == Enterprise Application
+This filter is intended to align the inventory with the Microsoft Entra admin center classification:
 
+```text
+Application type == Enterprise Application
+```
 
 The script does not apply additional exclusions based on:
 
